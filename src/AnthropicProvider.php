@@ -16,6 +16,9 @@ namespace PapiAI\Anthropic;
 
 use Generator;
 use PapiAI\Core\Contracts\ProviderInterface;
+use PapiAI\Core\Exception\AuthenticationException;
+use PapiAI\Core\Exception\ProviderException;
+use PapiAI\Core\Exception\RateLimitException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
@@ -26,6 +29,8 @@ class AnthropicProvider implements ProviderInterface
 {
     private const API_URL = 'https://api.anthropic.com/v1/messages';
     private const API_VERSION = '2023-06-01';
+
+    private ?int $lastRetryAfter = null;
 
     public function __construct(
         private readonly string $apiKey,
@@ -105,7 +110,17 @@ class AnthropicProvider implements ProviderInterface
         ];
 
         if ($systemMessage !== null) {
-            $payload['system'] = $systemMessage;
+            if (isset($options['cache']) && $options['cache'] === true) {
+                $payload['system'] = [
+                    [
+                        'type' => 'text',
+                        'text' => $systemMessage,
+                        'cache_control' => ['type' => 'ephemeral'],
+                    ],
+                ];
+            } else {
+                $payload['system'] = $systemMessage;
+            }
         }
 
         if (isset($options['temperature'])) {
@@ -223,6 +238,7 @@ class AnthropicProvider implements ProviderInterface
     {
         $ch = curl_init(self::API_URL);
 
+        $responseHeaders = [];
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
@@ -232,6 +248,14 @@ class AnthropicProvider implements ProviderInterface
                 'x-api-key: ' . $this->apiKey,
                 'anthropic-version: ' . self::API_VERSION,
             ],
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$responseHeaders) {
+                $parts = explode(':', $header, 2);
+                if (count($parts) === 2) {
+                    $responseHeaders[strtolower(trim($parts[0]))] = trim($parts[1]);
+                }
+
+                return strlen($header);
+            },
         ]);
 
         $response = curl_exec($ch);
@@ -240,6 +264,10 @@ class AnthropicProvider implements ProviderInterface
 
         curl_close($ch);
 
+        $this->lastRetryAfter = isset($responseHeaders['retry-after'])
+            ? (int) $responseHeaders['retry-after']
+            : null;
+
         if ($error !== '') {
             throw new RuntimeException("Anthropic API request failed: {$error}");
         }
@@ -247,11 +275,46 @@ class AnthropicProvider implements ProviderInterface
         $data = json_decode($response, true);
 
         if ($httpCode >= 400) {
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("Anthropic API error ({$httpCode}): {$errorMessage}");
+            $this->throwForStatusCode($httpCode, $data, $response);
         }
 
         return $data;
+    }
+
+    /**
+     * Throw the appropriate exception based on HTTP status code.
+     *
+     * @throws AuthenticationException
+     * @throws RateLimitException
+     * @throws ProviderException
+     */
+    private function throwForStatusCode(int $httpCode, ?array $data, string $rawResponse): never
+    {
+        $errorMessage = $data['error']['message'] ?? 'Unknown error';
+
+        if ($httpCode === 401) {
+            throw new AuthenticationException(
+                $this->getName(),
+                $httpCode,
+                $data,
+            );
+        }
+
+        if ($httpCode === 429) {
+            throw new RateLimitException(
+                $this->getName(),
+                $this->lastRetryAfter,
+                $httpCode,
+                $data,
+            );
+        }
+
+        throw new ProviderException(
+            "Anthropic API error ({$httpCode}): {$errorMessage}",
+            $this->getName(),
+            $httpCode,
+            $data,
+        );
     }
 
     /**
