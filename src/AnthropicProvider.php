@@ -22,7 +22,7 @@ use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use RuntimeException;
 
-final class AnthropicProvider implements ProviderInterface
+class AnthropicProvider implements ProviderInterface
 {
     private const API_URL = 'https://api.anthropic.com/v1/messages';
     private const API_VERSION = '2023-06-01';
@@ -31,7 +31,8 @@ final class AnthropicProvider implements ProviderInterface
         private readonly string $apiKey,
         private readonly string $defaultModel = 'claude-sonnet-4-20250514',
         private readonly int $defaultMaxTokens = 4096,
-    ) {}
+    ) {
+    }
 
     public function chat(array $messages, array $options = []): Response
     {
@@ -218,7 +219,7 @@ final class AnthropicProvider implements ProviderInterface
     /**
      * Make an API request.
      */
-    private function request(array $payload): array
+    protected function request(array $payload): array
     {
         $ch = curl_init(self::API_URL);
 
@@ -258,9 +259,11 @@ final class AnthropicProvider implements ProviderInterface
      *
      * @return Generator<array>
      */
-    private function streamRequest(array $payload): Generator
+    protected function streamRequest(array $payload): Generator
     {
         $ch = curl_init(self::API_URL);
+
+        $buffer = '';
 
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -273,11 +276,10 @@ final class AnthropicProvider implements ProviderInterface
             ],
             CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer) {
                 $buffer .= $data;
+
                 return strlen($data);
             },
         ]);
-
-        $buffer = '';
         curl_exec($ch);
         curl_close($ch);
 
