@@ -25,6 +25,18 @@ use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use RuntimeException;
 
+/**
+ * Anthropic Messages API provider for PapiAI.
+ *
+ * Bridges PapiAI's core types (Message, Response, ToolCall) with Anthropic's Messages API,
+ * handling format conversion in both directions. Supports chat completions, streaming,
+ * tool calling, vision (multimodal), structured output, and prompt caching (cache_control).
+ *
+ * Authentication is via API key passed in the x-api-key header. All HTTP is done with ext-curl
+ * directly, with no HTTP abstraction layer. Respects retry-after headers for rate limiting.
+ *
+ * @see https://docs.anthropic.com/en/docs
+ */
 class AnthropicProvider implements ProviderInterface
 {
     private const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -32,6 +44,11 @@ class AnthropicProvider implements ProviderInterface
 
     protected ?int $lastRetryAfter = null;
 
+    /**
+     * @param string $apiKey       Anthropic API key for authentication
+     * @param string $defaultModel Default model identifier
+     * @param int    $defaultMaxTokens Default maximum tokens for responses
+     */
     public function __construct(
         private readonly string $apiKey,
         private readonly string $defaultModel = 'claude-sonnet-4-20250514',
@@ -39,6 +56,18 @@ class AnthropicProvider implements ProviderInterface
     ) {
     }
 
+    /**
+     * Send a chat completion request to the Anthropic Messages API.
+     *
+     * @param Message[] $messages Conversation messages
+     * @param array     $options  Options including model, maxTokens, temperature, stopSequences, tools, and cache
+     *
+     * @return Response The parsed API response
+     *
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limited by the API
+     * @throws ProviderException       When the API returns an error
+     */
     public function chat(array $messages, array $options = []): Response
     {
         $payload = $this->buildPayload($messages, $options);
@@ -47,6 +76,18 @@ class AnthropicProvider implements ProviderInterface
         return Response::fromAnthropic($response, $messages);
     }
 
+    /**
+     * Stream a chat completion response from the Anthropic Messages API.
+     *
+     * Yields StreamChunk objects as content blocks arrive via server-sent events.
+     *
+     * @param Message[] $messages Conversation messages
+     * @param array     $options  Options including model, maxTokens, temperature, stopSequences, tools, and cache
+     *
+     * @return iterable<StreamChunk> Stream of response chunks
+     *
+     * @throws RuntimeException When the HTTP request fails
+     */
     public function stream(array $messages, array $options = []): iterable
     {
         $payload = $this->buildPayload($messages, $options);
@@ -64,21 +105,41 @@ class AnthropicProvider implements ProviderInterface
         }
     }
 
+    /**
+     * Whether this provider supports tool calling.
+     *
+     * @return bool Always true; Anthropic supports native tool use
+     */
     public function supportsTool(): bool
     {
         return true;
     }
 
+    /**
+     * Whether this provider supports vision (multimodal image input).
+     *
+     * @return bool Always true; Anthropic supports base64 and URL image inputs
+     */
     public function supportsVision(): bool
     {
         return true;
     }
 
+    /**
+     * Whether this provider supports structured JSON output.
+     *
+     * @return bool Always false; Anthropic does not have a native JSON mode
+     */
     public function supportsStructuredOutput(): bool
     {
         return false; // Anthropic doesn't have native JSON mode yet
     }
 
+    /**
+     * Get the provider identifier.
+     *
+     * @return string The provider name "anthropic"
+     */
     public function getName(): string
     {
         return 'anthropic';
@@ -232,7 +293,18 @@ class AnthropicProvider implements ProviderInterface
     }
 
     /**
-     * Make an API request.
+     * Send a synchronous POST request to the Anthropic Messages API.
+     *
+     * Captures response headers (including retry-after) and decodes the JSON response.
+     *
+     * @param array $payload The JSON-encodable request body
+     *
+     * @return array The decoded API response
+     *
+     * @throws RuntimeException        When the cURL request fails
+     * @throws AuthenticationException When the API key is invalid (HTTP 401)
+     * @throws RateLimitException      When rate limited (HTTP 429)
+     * @throws ProviderException       When the API returns any other error
      */
     protected function request(array $payload): array
     {
@@ -284,9 +356,16 @@ class AnthropicProvider implements ProviderInterface
     /**
      * Throw the appropriate exception based on HTTP status code.
      *
-     * @throws AuthenticationException
-     * @throws RateLimitException
-     * @throws ProviderException
+     * Maps 401 to AuthenticationException, 429 to RateLimitException (with retry-after),
+     * and all other 4xx/5xx codes to ProviderException.
+     *
+     * @param int         $httpCode    The HTTP response status code
+     * @param array|null  $data        The decoded response body, if available
+     * @param string      $rawResponse The raw response string for fallback error messages
+     *
+     * @throws AuthenticationException When HTTP 401 (invalid API key)
+     * @throws RateLimitException      When HTTP 429 (rate limited)
+     * @throws ProviderException       For all other error status codes
      */
     protected function throwForStatusCode(int $httpCode, ?array $data, string $rawResponse): never
     {
@@ -318,9 +397,13 @@ class AnthropicProvider implements ProviderInterface
     }
 
     /**
-     * Make a streaming API request.
+     * Send a streaming POST request to the Anthropic Messages API.
      *
-     * @return Generator<array>
+     * Buffers the full SSE response then parses and yields individual events.
+     *
+     * @param array $payload The JSON-encodable request body (must include stream: true)
+     *
+     * @return Generator<int, array> Parsed SSE event objects
      */
     protected function streamRequest(array $payload): Generator
     {
