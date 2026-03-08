@@ -14,6 +14,9 @@ declare(strict_types=1);
 
 use PapiAI\Anthropic\AnthropicProvider;
 use PapiAI\Core\Contracts\ProviderInterface;
+use PapiAI\Core\Exception\AuthenticationException;
+use PapiAI\Core\Exception\ProviderException;
+use PapiAI\Core\Exception\RateLimitException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\StreamChunk;
@@ -42,6 +45,16 @@ class TestableAnthropicProvider extends AnthropicProvider
         foreach ($this->fakeStreamEvents as $event) {
             yield $event;
         }
+    }
+
+    public function callThrowForStatusCode(int $httpCode, ?array $data, string $rawResponse = ''): never
+    {
+        $this->throwForStatusCode($httpCode, $data, $rawResponse);
+    }
+
+    public function setLastRetryAfter(?int $value): void
+    {
+        $this->lastRetryAfter = $value;
     }
 }
 
@@ -328,5 +341,28 @@ describe('AnthropicProvider', function () {
 
             expect($chunks)->toHaveCount(2); // text + complete
         });
+    });
+
+    describe('error mapping', function () {
+        it('throws AuthenticationException on 401', function () {
+            $this->provider->callThrowForStatusCode(401, ['error' => ['message' => 'Invalid key']], '');
+        })->throws(AuthenticationException::class);
+
+        it('throws RateLimitException on 429', function () {
+            $this->provider->callThrowForStatusCode(429, ['error' => ['message' => 'Too many requests']], '');
+        })->throws(RateLimitException::class);
+
+        it('throws RateLimitException on 429 with retry-after', function () {
+            $this->provider->setLastRetryAfter(30);
+            $this->provider->callThrowForStatusCode(429, ['error' => ['message' => 'Too many requests']], '');
+        })->throws(RateLimitException::class);
+
+        it('throws ProviderException on 500', function () {
+            $this->provider->callThrowForStatusCode(500, ['error' => ['message' => 'Server error']], '');
+        })->throws(ProviderException::class);
+
+        it('throws ProviderException with unknown error for null data', function () {
+            $this->provider->callThrowForStatusCode(500, null, '');
+        })->throws(ProviderException::class);
     });
 });

@@ -30,7 +30,7 @@ class AnthropicProvider implements ProviderInterface
     private const API_URL = 'https://api.anthropic.com/v1/messages';
     private const API_VERSION = '2023-06-01';
 
-    private ?int $lastRetryAfter = null;
+    protected ?int $lastRetryAfter = null;
 
     public function __construct(
         private readonly string $apiKey,
@@ -288,7 +288,7 @@ class AnthropicProvider implements ProviderInterface
      * @throws RateLimitException
      * @throws ProviderException
      */
-    private function throwForStatusCode(int $httpCode, ?array $data, string $rawResponse): never
+    protected function throwForStatusCode(int $httpCode, ?array $data, string $rawResponse): never
     {
         $errorMessage = $data['error']['message'] ?? 'Unknown error';
 
