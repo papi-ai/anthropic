@@ -1,6 +1,6 @@
 # PapiAI Anthropic Provider
 
-[![Tests](https://github.com/papi-ai/anthropic/workflows/CI/badge.svg)](https://github.com/papi-ai/anthropic/actions?query=workflow%3ACI)
+[![CI](https://github.com/papi-ai/anthropic/workflows/CI/badge.svg)](https://github.com/papi-ai/anthropic/actions?query=workflow%3ACI) [![Latest Version](https://img.shields.io/packagist/v/papi-ai/anthropic.svg)](https://packagist.org/packages/papi-ai/anthropic) [![Total Downloads](https://img.shields.io/packagist/dt/papi-ai/anthropic.svg)](https://packagist.org/packages/papi-ai/anthropic) [![PHP Version](https://img.shields.io/packagist/php-v/papi-ai/anthropic.svg)](https://packagist.org/packages/papi-ai/anthropic) [![License](https://img.shields.io/packagist/l/papi-ai/anthropic.svg)](https://packagist.org/packages/papi-ai/anthropic)
 
 Anthropic Claude provider for [PapiAI](https://github.com/papi-ai/papi-core) - A simple but powerful PHP library for building AI agents.
 
