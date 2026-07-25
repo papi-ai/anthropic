@@ -23,6 +23,7 @@ use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
+use PapiAI\Core\ToolCall;
 use RuntimeException;
 
 /**
@@ -73,7 +74,37 @@ class AnthropicProvider implements ProviderInterface
         $payload = $this->buildPayload($messages, $options);
         $response = $this->request($payload);
 
-        return Response::fromAnthropic($response, $messages);
+        return $this->mapResponse($response, $messages);
+    }
+
+    /**
+     * Map an Anthropic Messages API payload to a neutral Response.
+     *
+     * @param array          $payload  The decoded Anthropic API response
+     * @param array<Message> $messages Conversation history to attach
+     *
+     * @return Response The neutral response
+     */
+    private function mapResponse(array $payload, array $messages): Response
+    {
+        $text = '';
+        $toolCalls = [];
+
+        foreach ($payload['content'] ?? [] as $block) {
+            if (($block['type'] ?? null) === 'text') {
+                $text .= $block['text'];
+            } elseif (($block['type'] ?? null) === 'tool_use') {
+                $toolCalls[] = new ToolCall($block['id'], $block['name'], $block['input'] ?? []);
+            }
+        }
+
+        return new Response(
+            text: $text,
+            toolCalls: $toolCalls,
+            messages: $messages,
+            usage: $payload['usage'] ?? [],
+            stopReason: $payload['stop_reason'] ?? null,
+        );
     }
 
     /**
@@ -193,10 +224,32 @@ class AnthropicProvider implements ProviderInterface
         }
 
         if (isset($options['tools']) && !empty($options['tools'])) {
-            $payload['tools'] = $options['tools'];
+            $payload['tools'] = $this->convertTools($options['tools']);
         }
 
         return $payload;
+    }
+
+    /**
+     * Convert neutral tool definitions to Anthropic's tool format.
+     *
+     * Accepts the neutral shape the Agent emits (name, description, parameters) and also a pre-built
+     * Anthropic shape (input_schema) for backward compatibility.
+     *
+     * @param array<array<string, mixed>> $tools Neutral tool definitions
+     *
+     * @return array<array{name: string, description: string, input_schema: array}>
+     */
+    private function convertTools(array $tools): array
+    {
+        return array_map(
+            fn (array $tool): array => [
+                'name' => $tool['name'],
+                'description' => $tool['description'] ?? '',
+                'input_schema' => $tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object', 'properties' => []],
+            ],
+            $tools,
+        );
     }
 
     /**
