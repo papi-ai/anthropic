@@ -24,6 +24,7 @@ use PapiAI\Core\Response;
 use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
+use PapiAI\Core\ToolChoice;
 use RuntimeException;
 
 /**
@@ -225,6 +226,21 @@ class AnthropicProvider implements ProviderInterface
 
         if (isset($options['tools']) && !empty($options['tools'])) {
             $payload['tools'] = $this->convertTools($options['tools']);
+        }
+
+        // Forced tool choice. Validation lives in core and throws before any HTTP call.
+        if (isset($options['toolChoice'])) {
+            $choice = ToolChoice::fromOption($options['toolChoice'], $options['tools'] ?? []);
+
+            if (!empty($options['tools'])) {
+                $payload['tool_choice'] = $choice->toolName !== null
+                    ? ['type' => 'tool', 'name' => $choice->toolName]
+                    : match ($choice->mode) {
+                        ToolChoice::NONE => ['type' => 'none'],
+                        ToolChoice::REQUIRED => ['type' => 'any'],
+                        default => ['type' => 'auto'],
+                    };
+            }
         }
 
         return $payload;
