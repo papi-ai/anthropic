@@ -50,4 +50,4 @@ echo $response->text;
 
 - PHP 8.2+
 - `ext-curl`
-- `papi-ai/papi-core` ^0.12
+- `papi-ai/papi-core` ^0.14
