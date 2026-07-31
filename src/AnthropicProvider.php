@@ -16,9 +16,11 @@ namespace PapiAI\Anthropic;
 
 use Generator;
 use PapiAI\Core\Contracts\ProviderInterface;
+use PapiAI\Core\Effort;
 use PapiAI\Core\Exception\AuthenticationException;
 use PapiAI\Core\Exception\ProviderException;
 use PapiAI\Core\Exception\RateLimitException;
+use PapiAI\Core\Exception\UnknownEffortException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
@@ -44,17 +46,30 @@ class AnthropicProvider implements ProviderInterface
     private const API_URL = 'https://api.anthropic.com/v1/messages';
     private const API_VERSION = '2023-06-01';
 
+    // Current generation. These IDs are dateless pinned snapshots, not moving aliases.
+    public const MODEL_CLAUDE_OPUS_5 = 'claude-opus-5';
+    public const MODEL_CLAUDE_SONNET_5 = 'claude-sonnet-5';
+    public const MODEL_CLAUDE_FABLE_5 = 'claude-fable-5';
+    public const MODEL_CLAUDE_HAIKU_4_5 = 'claude-haiku-4-5';
+
+    // Previous generations, still active.
+    public const MODEL_CLAUDE_OPUS_4_8 = 'claude-opus-4-8';
+    public const MODEL_CLAUDE_OPUS_4_7 = 'claude-opus-4-7';
+    public const MODEL_CLAUDE_SONNET_4_6 = 'claude-sonnet-4-6';
+
     protected ?int $lastRetryAfter = null;
 
     /**
-     * @param string $apiKey       Anthropic API key for authentication
-     * @param string $defaultModel Default model identifier
-     * @param int    $defaultMaxTokens Default maximum tokens for responses
+     * @param string      $apiKey       Anthropic API key for authentication
+     * @param string      $defaultModel Default model identifier
+     * @param int         $defaultMaxTokens Default maximum tokens for responses
+     * @param Effort|null $defaultEffort Extended-thinking effort when none is given per call
      */
     public function __construct(
         private readonly string $apiKey,
-        private readonly string $defaultModel = 'claude-sonnet-4-20250514',
+        private readonly string $defaultModel = self::MODEL_CLAUDE_SONNET_5,
         private readonly int $defaultMaxTokens = 4096,
+        private readonly ?Effort $defaultEffort = null,
     ) {
     }
 
@@ -243,7 +258,47 @@ class AnthropicProvider implements ProviderInterface
             }
         }
 
+        // Reasoning effort maps to extended thinking. Anthropic has no levels, it has a token
+        // budget drawn from the same max_tokens as the answer, so it can honour the whole scale
+        // exactly rather than narrowing to the nearest rung.
+        $effort = $this->effortFor($options);
+
+        if ($effort !== null && $effort->thinks()) {
+            $maxTokens = $payload['max_tokens'];
+
+            if (!$effort->fitsWithin($maxTokens)) {
+                throw new ProviderException(
+                    sprintf(
+                        'Extended thinking needs at least %d tokens for thinking plus room to answer, but maxTokens is %d. Raise maxTokens or ask for "none".',
+                        Effort::MINIMUM_BUDGET,
+                        $maxTokens,
+                    ),
+                    $this->getName(),
+                );
+            }
+
+            $payload['thinking'] = ['type' => 'enabled', 'budget_tokens' => $effort->budgetWithin($maxTokens)];
+        }
+
         return $payload;
+    }
+
+    /**
+     * The effort this request asks for: the per-call option, else the provider default.
+     *
+     * @param array<string, mixed> $options The caller's request options
+     *
+     * @throws UnknownEffortException When the level is not one core defines
+     */
+    private function effortFor(array $options): ?Effort
+    {
+        if (!isset($options['effort'])) {
+            return $this->defaultEffort;
+        }
+
+        $level = (string) $options['effort'];
+
+        return Effort::tryFrom($level) ?? throw new UnknownEffortException($level);
     }
 
     /**
