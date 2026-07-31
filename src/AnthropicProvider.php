@@ -15,6 +15,7 @@ declare(strict_types=1);
 namespace PapiAI\Anthropic;
 
 use Generator;
+use PapiAI\Core\Contracts\NamedToolSelectableInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
 use PapiAI\Core\Effort;
 use PapiAI\Core\Exception\AuthenticationException;
@@ -41,7 +42,7 @@ use RuntimeException;
  *
  * @see https://docs.anthropic.com/en/docs
  */
-class AnthropicProvider implements ProviderInterface
+class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterface
 {
     private const API_URL = 'https://api.anthropic.com/v1/messages';
     private const API_VERSION = '2023-06-01';
