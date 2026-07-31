@@ -133,7 +133,7 @@ describe('AnthropicProvider', function () {
 
             $this->provider->chat([Message::user('Hello')]);
 
-            expect($this->provider->lastPayload['model'])->toBe('claude-sonnet-4-20250514');
+            expect($this->provider->lastPayload['model'])->toBe('claude-sonnet-5');
             expect($this->provider->lastPayload['max_tokens'])->toBe(4096);
         });
 
