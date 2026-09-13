@@ -48,6 +48,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     private const API_VERSION = '2023-06-01';
 
     // Current generation. These IDs are dateless pinned snapshots, not moving aliases.
+    public const MODEL_CLAUDE_FABLE_5_1 = 'claude-fable-5-1';
     public const MODEL_CLAUDE_OPUS_5 = 'claude-opus-5';
     public const MODEL_CLAUDE_SONNET_5 = 'claude-sonnet-5';
     public const MODEL_CLAUDE_FABLE_5 = 'claude-fable-5';
@@ -56,7 +57,16 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     // Previous generations, still active.
     public const MODEL_CLAUDE_OPUS_4_8 = 'claude-opus-4-8';
     public const MODEL_CLAUDE_OPUS_4_7 = 'claude-opus-4-7';
+    public const MODEL_CLAUDE_OPUS_4_6 = 'claude-opus-4-6';
     public const MODEL_CLAUDE_SONNET_4_6 = 'claude-sonnet-4-6';
+
+    /**
+     * The two levels Anthropic spells differently from the neutral scale.
+     */
+    private const NATIVE_EFFORT = [
+        'extra-high' => 'xhigh',
+        'maximum' => 'max',
+    ];
 
     protected ?int $lastRetryAfter = null;
 
@@ -249,6 +259,8 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             $choice = ToolChoice::fromOption($options['toolChoice'], $options['tools'] ?? []);
 
             if (!empty($options['tools'])) {
+                $this->assertCanForce($choice, (string) $payload['model']);
+
                 $payload['tool_choice'] = $choice->toolName !== null
                     ? ['type' => 'tool', 'name' => $choice->toolName]
                     : match ($choice->mode) {
@@ -259,29 +271,168 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             }
         }
 
-        // Reasoning effort maps to extended thinking. Anthropic has no levels, it has a token
-        // budget drawn from the same max_tokens as the answer, so it can honour the whole scale
-        // exactly rather than narrowing to the nearest rung.
         $effort = $this->effortFor($options);
 
-        if ($effort !== null && $effort->thinks()) {
-            $maxTokens = $payload['max_tokens'];
-
-            if (!$effort->fitsWithin($maxTokens)) {
-                throw new ProviderException(
-                    sprintf(
-                        'Extended thinking needs at least %d tokens for thinking plus room to answer, but maxTokens is %d. Raise maxTokens or ask for "none".',
-                        Effort::MINIMUM_BUDGET,
-                        $maxTokens,
-                    ),
-                    $this->getName(),
-                );
-            }
-
-            $payload['thinking'] = ['type' => 'enabled', 'budget_tokens' => $effort->budgetWithin($maxTokens)];
+        if ($effort !== null) {
+            $payload = $this->withThinking($payload, $effort, (string) $payload['model']);
         }
 
         return $payload;
+    }
+
+    /**
+     * Refuse a forced tool choice on the models that return 400 for one.
+     *
+     * Fable 5.1 accepts "auto" and "none" only. Throwing here, before the round trip, says why;
+     * the API's own error does not.
+     *
+     * @throws ProviderException When the model cannot honour "any" or a named tool
+     */
+    private function assertCanForce(ToolChoice $choice, string $model): void
+    {
+        if ($choice->isAuto() || $choice->mode === ToolChoice::NONE || !$this->refusesForcedTools($model)) {
+            return;
+        }
+
+        throw new ProviderException(
+            sprintf(
+                'Model "%s" does not accept a forced tool choice: the API returns 400 for "required" and for a named tool. Use "auto" with an instruction, or structured output.',
+                $model,
+            ),
+            $this->getName(),
+        );
+    }
+
+    /**
+     * Apply a level of effort in whichever shape this model's generation accepts.
+     *
+     * Three generations, three shapes. Haiku 4.5 predates adaptive thinking and wants a token
+     * budget. Everything from 4.6 on wants adaptive thinking plus an effort level, and rejects
+     * a budget with a 400. Fable cannot stop thinking at all, so it never gets a thinking block.
+     *
+     * @param array<string, mixed> $payload The request so far
+     *
+     * @return array<string, mixed> The request with thinking applied
+     *
+     * @throws ProviderException When a budget model's ceiling is too small to think and answer
+     */
+    private function withThinking(array $payload, Effort $effort, string $model): array
+    {
+        if ($this->thinksAlways($model)) {
+            // Cannot be switched off, so "none" narrows to the shallowest level on offer.
+            $payload['output_config'] = ['effort' => $this->nativeLevel($effort, $model)];
+
+            return $payload;
+        }
+
+        if ($this->takesBudget($model)) {
+            return $this->withBudget($payload, $effort);
+        }
+
+        if (!$effort->thinks()) {
+            // Sonnet 5 and Opus 5 think unless told not to. The 4.x models are off when the
+            // field is omitted, so saying "disabled" there would only be noise.
+            if ($this->thinksByDefault($model)) {
+                $payload['thinking'] = ['type' => 'disabled'];
+            }
+
+            return $payload;
+        }
+
+        $payload['thinking'] = ['type' => 'adaptive'];
+        $payload['output_config'] = ['effort' => $this->nativeLevel($effort, $model)];
+
+        return $payload;
+    }
+
+    /**
+     * The pre-4.6 shape: a token budget carved out of max_tokens.
+     *
+     * @param array<string, mixed> $payload The request so far
+     *
+     * @return array<string, mixed> The request with a thinking budget, or untouched for "none"
+     *
+     * @throws ProviderException When max_tokens cannot hold both the budget and an answer
+     */
+    private function withBudget(array $payload, Effort $effort): array
+    {
+        if (!$effort->thinks()) {
+            return $payload;
+        }
+
+        $maxTokens = (int) $payload['max_tokens'];
+
+        if (!$effort->fitsWithin($maxTokens)) {
+            throw new ProviderException(
+                sprintf(
+                    'Extended thinking needs at least %d tokens for thinking plus room to answer, but maxTokens is %d. Raise maxTokens or ask for "none".',
+                    Effort::MINIMUM_BUDGET,
+                    $maxTokens,
+                ),
+                $this->getName(),
+            );
+        }
+
+        $payload['thinking'] = ['type' => 'enabled', 'budget_tokens' => $effort->budgetWithin($maxTokens)];
+
+        return $payload;
+    }
+
+    /**
+     * The effort level this model accepts that is nearest to the one asked for, in Anthropic's spelling.
+     */
+    private function nativeLevel(Effort $effort, string $model): string
+    {
+        $offered = $this->lacksExtraHigh($model)
+            ? [Effort::Low, Effort::Medium, Effort::High, Effort::Maximum]
+            : [Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum];
+
+        $level = $effort->nearestOf($offered)->value;
+
+        return self::NATIVE_EFFORT[$level] ?? $level;
+    }
+
+    /**
+     * Fable and Mythos: thinking is always on and a "disabled" block is a 400.
+     */
+    private function thinksAlways(string $model): bool
+    {
+        return preg_match('/claude-(fable|mythos)-/i', $model) === 1;
+    }
+
+    /**
+     * Pre-4.6 models, which take a token budget and reject an effort level.
+     *
+     * Anything unrecognised is assumed to be newer, not older: a model we have not heard of is
+     * far more likely to be next month's than last year's.
+     */
+    private function takesBudget(string $model): bool
+    {
+        return preg_match('/claude-(haiku-4-5|3-|opus-4-[15]|sonnet-4-5|(opus|sonnet)-4-2025)/i', $model) === 1;
+    }
+
+    /**
+     * Sonnet 5 and Opus 5 run adaptive thinking when the field is omitted.
+     */
+    private function thinksByDefault(string $model): bool
+    {
+        return preg_match('/claude-(opus|sonnet)-5(?![0-9.])/i', $model) === 1;
+    }
+
+    /**
+     * The 4.6 pair predates the xhigh level.
+     */
+    private function lacksExtraHigh(string $model): bool
+    {
+        return preg_match('/claude-(opus|sonnet)-4-6(?![0-9])/i', $model) === 1;
+    }
+
+    /**
+     * Fable 5.1 and Mythos 5.1 return 400 for "any" and for a named tool.
+     */
+    private function refusesForcedTools(string $model): bool
+    {
+        return preg_match('/claude-(fable|mythos)-5-1(?![0-9])/i', $model) === 1;
     }
 
     /**
