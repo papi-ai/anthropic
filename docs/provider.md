@@ -44,6 +44,16 @@ AnthropicProvider::MODEL_CLAUDE_SONNET_4_6 // 'claude-sonnet-4-6'
 
 All of these are active. Haiku 4.5 is the only one with a retirement floor inside a year: not sooner than 15 October 2026.
 
+The constants alias a `ClaudeModel` enum, which is the source of truth: it knows each model's thinking API, effort levels, whether a tool can be forced, and its retirement floor. Pass the enum's `->value` or the constant, both are the same string.
+
+```php
+use PapiAI\Anthropic\ClaudeModel;
+
+ClaudeModel::Haiku45->retiresNotBefore();   // '2026-10-15'
+ClaudeModel::Fable51->acceptsForcedTools(); // false
+ClaudeModel::tryFrom('claude-opus-6');      // null: unknown IDs are assumed newest, never rejected
+```
+
 ## Reasoning effort
 
 `effort` maps to whichever shape the model's generation accepts. Everything from 4.6 on takes adaptive thinking plus an effort level (`low` to `max`); Haiku 4.5 takes a token budget carved out of `maxTokens`; Fable cannot stop thinking, so `none` narrows to `low` rather than sending a block the API rejects.

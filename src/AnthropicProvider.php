@@ -48,17 +48,17 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     private const API_VERSION = '2023-06-01';
 
     // Current generation. These IDs are dateless pinned snapshots, not moving aliases.
-    public const MODEL_CLAUDE_FABLE_5_1 = 'claude-fable-5-1';
-    public const MODEL_CLAUDE_OPUS_5 = 'claude-opus-5';
-    public const MODEL_CLAUDE_SONNET_5 = 'claude-sonnet-5';
-    public const MODEL_CLAUDE_FABLE_5 = 'claude-fable-5';
-    public const MODEL_CLAUDE_HAIKU_4_5 = 'claude-haiku-4-5';
+    public const MODEL_CLAUDE_FABLE_5_1 = ClaudeModel::Fable51->value;
+    public const MODEL_CLAUDE_OPUS_5 = ClaudeModel::Opus5->value;
+    public const MODEL_CLAUDE_SONNET_5 = ClaudeModel::Sonnet5->value;
+    public const MODEL_CLAUDE_FABLE_5 = ClaudeModel::Fable5->value;
+    public const MODEL_CLAUDE_HAIKU_4_5 = ClaudeModel::Haiku45->value;
 
     // Previous generations, still active.
-    public const MODEL_CLAUDE_OPUS_4_8 = 'claude-opus-4-8';
-    public const MODEL_CLAUDE_OPUS_4_7 = 'claude-opus-4-7';
-    public const MODEL_CLAUDE_OPUS_4_6 = 'claude-opus-4-6';
-    public const MODEL_CLAUDE_SONNET_4_6 = 'claude-sonnet-4-6';
+    public const MODEL_CLAUDE_OPUS_4_8 = ClaudeModel::Opus48->value;
+    public const MODEL_CLAUDE_OPUS_4_7 = ClaudeModel::Opus47->value;
+    public const MODEL_CLAUDE_OPUS_4_6 = ClaudeModel::Opus46->value;
+    public const MODEL_CLAUDE_SONNET_4_6 = ClaudeModel::Sonnet46->value;
 
     /**
      * The two levels Anthropic spells differently from the neutral scale.
@@ -383,48 +383,73 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
      */
     private function nativeLevel(Effort $effort, string $model): string
     {
-        $offered = $this->lacksExtraHigh($model)
-            ? [Effort::Low, Effort::Medium, Effort::High, Effort::Maximum]
-            : [Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum];
-
-        $level = $effort->nearestOf($offered)->value;
+        $level = $effort->nearestOf($this->levelsFor($model))->value;
 
         return self::NATIVE_EFFORT[$level] ?? $level;
     }
 
     /**
+     * What we know about this model, or null for an ID we have not shipped a case for yet.
+     */
+    private function known(string $model): ?ClaudeModel
+    {
+        return ClaudeModel::tryFrom($model);
+    }
+
+    /**
      * Fable and Mythos: thinking is always on and a "disabled" block is a 400.
+     *
+     * Unrecognised IDs in those families are matched by name, since a new Fable is far likelier
+     * to keep the family's rules than to drop them.
      */
     private function thinksAlways(string $model): bool
     {
+        $known = $this->known($model);
+
+        if ($known !== null) {
+            return $known->thinking() === ThinkingApi::AlwaysOn;
+        }
+
         return preg_match('/claude-(fable|mythos)-/i', $model) === 1;
     }
 
     /**
      * Pre-4.6 models, which take a token budget and reject an effort level.
      *
-     * Anything unrecognised is assumed to be newer, not older: a model we have not heard of is
-     * far more likely to be next month's than last year's.
+     * Anything unrecognised is assumed to be newer, not older.
      */
     private function takesBudget(string $model): bool
     {
+        $known = $this->known($model);
+
+        if ($known !== null) {
+            return $known->thinking() === ThinkingApi::Budget;
+        }
+
         return preg_match('/claude-(haiku-4-5|3-|opus-4-[15]|sonnet-4-5|(opus|sonnet)-4-2025)/i', $model) === 1;
     }
 
     /**
-     * Sonnet 5 and Opus 5 run adaptive thinking when the field is omitted.
+     * Whether an adaptive model thinks when the field is omitted. Unknown models are assumed to,
+     * since that is the direction every generation since Opus 5 has taken.
      */
     private function thinksByDefault(string $model): bool
     {
-        return preg_match('/claude-(opus|sonnet)-5(?![0-9.])/i', $model) === 1;
+        return $this->known($model)?->thinksByDefault() ?? true;
     }
 
     /**
-     * The 4.6 pair predates the xhigh level.
+     * The effort levels this model accepts. Unknown models are assumed to take the full scale.
+     *
+     * @return non-empty-list<Effort>
      */
-    private function lacksExtraHigh(string $model): bool
+    private function levelsFor(string $model): array
     {
-        return preg_match('/claude-(opus|sonnet)-4-6(?![0-9])/i', $model) === 1;
+        $levels = $this->known($model)?->effortLevels() ?? [];
+
+        return $levels !== []
+            ? $levels
+            : [Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum];
     }
 
     /**
@@ -432,6 +457,12 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
      */
     private function refusesForcedTools(string $model): bool
     {
+        $known = $this->known($model);
+
+        if ($known !== null) {
+            return !$known->acceptsForcedTools();
+        }
+
         return preg_match('/claude-(fable|mythos)-5-1(?![0-9])/i', $model) === 1;
     }
 
