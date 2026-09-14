@@ -459,8 +459,6 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
 
-        curl_close($ch);
-
         $this->lastRetryAfter = isset($responseHeaders['retry-after'])
             ? (int) $responseHeaders['retry-after']
             : null;
@@ -552,7 +550,6 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             },
         ]);
         curl_exec($ch);
-        curl_close($ch);
 
         // Parse SSE events
         $lines = explode("\n", $buffer);
