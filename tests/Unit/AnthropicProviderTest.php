@@ -19,6 +19,7 @@ use PapiAI\Core\Exception\ProviderException;
 use PapiAI\Core\Exception\RateLimitException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
+use PapiAI\Core\StopReason;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
 
@@ -364,5 +365,32 @@ describe('AnthropicProvider', function () {
         it('throws ProviderException with unknown error for null data', function () {
             $this->provider->callThrowForStatusCode(500, null, '');
         })->throws(ProviderException::class);
+    });
+});
+
+describe('AnthropicProvider stop reason', function () {
+    beforeEach(function () {
+        $this->provider = new TestableAnthropicProvider('test-api-key');
+        $this->stoppedBecause = function (string $raw): StopReason {
+            $this->provider->fakeResponse = ['content' => [['type' => 'text', 'text' => 'x']], 'stop_reason' => $raw, 'usage' => []];
+
+            return $this->provider->chat([Message::user('Hi')])->stoppedBecause;
+        };
+    });
+
+    it('says why the model stopped in core\'s vocabulary', function () {
+        $reasons = [
+            'end_turn' => StopReason::Stop,
+            'stop_sequence' => StopReason::Stop,
+            'max_tokens' => StopReason::MaxTokens,
+            'model_context_window_exceeded' => StopReason::MaxTokens,
+            'tool_use' => StopReason::ToolCalls,
+            'refusal' => StopReason::Refused,
+            'pause_turn' => StopReason::Other,
+        ];
+
+        foreach ($reasons as $raw => $expected) {
+            expect(($this->stoppedBecause)($raw))->toBe($expected, $raw);
+        }
     });
 });
