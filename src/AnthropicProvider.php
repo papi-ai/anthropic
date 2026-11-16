@@ -568,7 +568,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
                     'type' => 'tool_use',
                     'id' => $toolCall->id,
                     'name' => $toolCall->name,
-                    'input' => $toolCall->arguments,
+                    'input' => $toolCall->argumentsAsObject(),
                 ];
             }
             $apiMessage['content'] = $content;

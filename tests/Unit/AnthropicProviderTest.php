@@ -394,3 +394,20 @@ describe('AnthropicProvider stop reason', function () {
         }
     });
 });
+
+describe('AnthropicProvider tool calls without arguments', function () {
+    it('re-sends them as an empty object, which the API requires', function () {
+        $provider = new TestableAnthropicProvider('test-api-key');
+        $provider->fakeResponse = ['content' => [['type' => 'text', 'text' => 'done']], 'stop_reason' => 'end_turn', 'usage' => []];
+
+        $provider->chat([
+            Message::user('Run the specs'),
+            Message::assistant('', [new ToolCall('c1', 'run_specs', [])]),
+            Message::toolResult('c1', 'ok'),
+        ]);
+
+        $wire = (string) json_encode($provider->lastPayload);
+        expect($wire)->toContain('"input":{}');
+        expect($wire)->not->toContain('"input":[]');
+    });
+});
