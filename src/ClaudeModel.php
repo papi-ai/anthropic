@@ -148,6 +148,20 @@ enum ClaudeModel: string
     }
 
     /**
+     * Whether a `role: system` message is accepted after the conversation has started.
+     *
+     * It lets an instruction change without editing the opening prompt, which would invalidate the
+     * thinking and the cache that follow. Sonnet 5 and the models before Opus 4.8 reject it.
+     */
+    public function acceptsMidConversationSystem(): bool
+    {
+        return match ($this) {
+            self::Sonnet5, self::Opus47, self::Opus46, self::Sonnet46, self::Haiku45 => false,
+            default => true,
+        };
+    }
+
+    /**
      * Whether Anthropic has announced a retirement for this model.
      */
     public function isDeprecated(): bool

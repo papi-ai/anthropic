@@ -76,6 +76,18 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         'maximum' => 'max',
     ];
 
+    /**
+     * Blocks the API wants back exactly as it sent them.
+     */
+    private const SENT_BACK_BLOCKS = ['thinking', 'redacted_thinking', 'compaction'];
+
+    /**
+     * Of those, the ones that carry the model's reasoning.
+     */
+    private const THINKING_BLOCKS = ['thinking', 'redacted_thinking'];
+
+    private const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+
     protected ?int $lastRetryAfter = null;
 
     /**
@@ -83,12 +95,16 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
      * @param string      $defaultModel Default model identifier
      * @param int         $defaultMaxTokens Default maximum tokens for responses
      * @param Effort|null $defaultEffort Extended-thinking effort when none is given per call
+     * @param ThinkingReplay $thinkingReplay Whether thinking goes back to the API, for a caller whose history only grows
+     * @param list<ContextEditInterface> $contextEdits Edits the API applies on its side, such as compaction
      */
     public function __construct(
         private readonly string $apiKey,
         private readonly string $defaultModel = self::MODEL_CLAUDE_SONNET_5_5,
         private readonly int $defaultMaxTokens = 4096,
         private readonly ?Effort $defaultEffort = null,
+        private readonly ThinkingReplay $thinkingReplay = ThinkingReplay::Off,
+        private readonly array $contextEdits = [],
     ) {
     }
 
@@ -124,8 +140,9 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     {
         $text = '';
         $toolCalls = [];
+        $content = $payload['content'] ?? [];
 
-        foreach ($payload['content'] ?? [] as $block) {
+        foreach ($content as $block) {
             if (($block['type'] ?? null) === 'text') {
                 $text .= $block['text'];
             } elseif (($block['type'] ?? null) === 'tool_use') {
@@ -137,10 +154,48 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             text: $text,
             toolCalls: $toolCalls,
             messages: $messages,
-            usage: $payload['usage'] ?? [],
+            usage: $this->usageIncludingCompaction($payload['usage'] ?? []),
             stopReason: $payload['stop_reason'] ?? null,
             stoppedBecause: $this->stoppedBecauseOf($payload['stop_reason'] ?? null),
+            replay: $this->hasBlockToSendBack($content) ? [$this->getName() => $content] : [],
         );
+    }
+
+    /**
+     * Whether the content holds a block the API wants back verbatim: thinking, or a compaction summary.
+     *
+     * @param array<array<string, mixed>> $content
+     */
+    private function hasBlockToSendBack(array $content): bool
+    {
+        foreach ($content as $block) {
+            if (in_array($block['type'] ?? null, self::SENT_BACK_BLOCKS, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A compaction is billed as an iteration of its own, which the top-level counts leave out.
+     *
+     * @param array<string, mixed> $usage
+     *
+     * @return array<string, mixed>
+     */
+    private function usageIncludingCompaction(array $usage): array
+    {
+        $iterations = $usage['iterations'] ?? [];
+
+        if (!is_array($iterations) || $iterations === []) {
+            return $usage;
+        }
+
+        return array_replace($usage, [
+            'input_tokens' => array_sum(array_column($iterations, 'input_tokens')),
+            'output_tokens' => array_sum(array_column($iterations, 'output_tokens')),
+        ]);
     }
 
     /**
@@ -217,42 +272,14 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
      */
     private function buildPayload(array $messages, array $options): array
     {
-        $systemMessage = null;
-        $apiMessages = [];
-
-        foreach ($messages as $message) {
-            if ($message instanceof Message) {
-                if ($message->isSystem()) {
-                    $systemMessage = $message->getText();
-                    continue;
-                }
-
-                $apiMessages[] = $this->convertMessage($message);
-            }
-        }
-
+        $model = (string) ($options['model'] ?? $this->defaultModel);
         $payload = [
-            'model' => $options['model'] ?? $this->defaultModel,
+            'model' => $model,
             'max_tokens' => $options['maxTokens'] ?? $this->defaultMaxTokens,
-            'messages' => $apiMessages,
         ];
 
-        if ($systemMessage !== null) {
-            if (isset($options['cache']) && $options['cache'] === true) {
-                $payload['system'] = [
-                    [
-                        'type' => 'text',
-                        'text' => $systemMessage,
-                        'cache_control' => ['type' => 'ephemeral'],
-                    ],
-                ];
-            } else {
-                $payload['system'] = $systemMessage;
-            }
-        }
-
         if (isset($options['temperature'])) {
-            $this->assertAcceptsSampling((string) $payload['model']);
+            $this->assertAcceptsSampling($model);
             $payload['temperature'] = $options['temperature'];
         }
 
@@ -269,7 +296,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             $choice = ToolChoice::fromOption($options['toolChoice'], $options['tools'] ?? []);
 
             if (!empty($options['tools'])) {
-                $this->assertCanForce($choice, (string) $payload['model']);
+                $this->assertCanForce($choice, $model);
 
                 $payload['tool_choice'] = $choice->toolName !== null
                     ? ['type' => 'tool', 'name' => $choice->toolName]
@@ -284,8 +311,166 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         $effort = $this->effortFor($options);
 
         if ($effort !== null) {
-            $payload = $this->withThinking($payload, $effort, (string) $payload['model']);
+            $payload = $this->withThinking($payload, $effort, $model);
         }
+
+        $bindable = $this->thinksAdaptively($payload);
+        $payload = $this->withConversation($payload, $messages, $options, $this->thinkingReplay->replaysWhen($bindable));
+
+        if ($bindable) {
+            $payload = $this->withThinkingBinding($payload);
+        }
+
+        return $this->withContextEdits($payload);
+    }
+
+    /**
+     * The system prompt and messages, with each assistant turn as the API expects it back.
+     *
+     * Leading system messages make the system prompt. A later one stays where it is, on a model
+     * that takes it there, so changing an instruction never rewrites the history already sent.
+     *
+     * @param array<string, mixed> $payload  The request so far
+     * @param array<mixed>         $messages The caller's conversation
+     * @param array<string, mixed> $options  The caller's request options
+     * @param bool                 $replayThinking Whether thinking blocks go back
+     *
+     * @return array<string, mixed> The request with system and messages
+     *
+     * @throws ProviderException When a later system message sits where the API rejects one
+     */
+    private function withConversation(array $payload, array $messages, array $options, bool $replayThinking): array
+    {
+        $systemMessage = null;
+        $apiMessages = [];
+        $systemPositions = [];
+        $inPlace = $this->acceptsMidConversationSystem((string) $payload['model']);
+
+        foreach ($messages as $position => $message) {
+            if (!$message instanceof Message) {
+                continue;
+            }
+
+            if ($message->isSystem() && ($apiMessages === [] || !$inPlace)) {
+                $systemMessage = $message->getText();
+
+                continue;
+            }
+
+            if ($message->isSystem()) {
+                $systemPositions[count($apiMessages)] = $position;
+                $apiMessages[] = ['role' => 'system', 'content' => $message->getText()];
+
+                continue;
+            }
+
+            $apiMessages[] = $this->convertMessage($message, $replayThinking);
+        }
+
+        $this->assertSystemMessagesPlaced($apiMessages, $systemPositions);
+        $payload['messages'] = $apiMessages;
+
+        if ($systemMessage === null) {
+            return $payload;
+        }
+
+        $payload['system'] = ($options['cache'] ?? false) === true
+            ? [['type' => 'text', 'text' => $systemMessage, 'cache_control' => ['type' => 'ephemeral']]]
+            : $systemMessage;
+
+        return $payload;
+    }
+
+    /**
+     * Refuse a later system message the API would reject for where it sits.
+     *
+     * It must follow a user message, and be either the last message or come just before an assistant one.
+     *
+     * @param list<array<string, mixed>> $apiMessages     The messages as they will be sent
+     * @param array<int, int|string>     $systemPositions Each later system message's index there, mapped to the caller's
+     *
+     * @throws ProviderException Naming the caller's position of the misplaced message
+     */
+    private function assertSystemMessagesPlaced(array $apiMessages, array $systemPositions): void
+    {
+        foreach ($systemPositions as $index => $position) {
+            $previous = $apiMessages[$index - 1]['role'] ?? null;
+            $next = $apiMessages[$index + 1]['role'] ?? 'assistant';
+
+            if ($previous === 'user' && $next === 'assistant') {
+                continue;
+            }
+
+            throw new ProviderException(
+                sprintf(
+                    'The system message at position %s must follow a user message and be the last message or come just before an assistant one. Append it after the next user message instead.',
+                    $position,
+                ),
+                $this->getName(),
+            );
+        }
+    }
+
+    /**
+     * Whether this request thinks adaptively, the one mode that accepts a binding.
+     *
+     * An omitted field means the model's own default, which is adaptive from Opus 5 on and for any
+     * model we have not heard of.
+     *
+     * @param array<string, mixed> $payload The request so far
+     */
+    private function thinksAdaptively(array $payload): bool
+    {
+        if (isset($payload['thinking'])) {
+            return ($payload['thinking']['type'] ?? null) === 'adaptive';
+        }
+
+        $model = (string) $payload['model'];
+
+        if ($this->takesBudget($model)) {
+            return false;
+        }
+
+        return $this->known($model)?->thinksByDefault() ?? true;
+    }
+
+    /**
+     * Tell the API what to do with thinking a history edit invalidated, when thinking goes back.
+     *
+     * @param array<string, mixed> $payload A request that thinks adaptively
+     *
+     * @return array<string, mixed>
+     */
+    private function withThinkingBinding(array $payload): array
+    {
+        $behaviour = $this->thinkingReplay->prefixMismatchBehavior();
+
+        if ($behaviour === null) {
+            return $payload;
+        }
+
+        $payload['thinking'] = [
+            'type' => 'adaptive',
+            'block_binding' => ['prefix_mismatch_behavior' => $behaviour],
+        ];
+
+        return $payload;
+    }
+
+    /**
+     * @param array<string, mixed> $payload The request so far
+     *
+     * @return array<string, mixed>
+     */
+    private function withContextEdits(array $payload): array
+    {
+        if ($this->contextEdits === []) {
+            return $payload;
+        }
+
+        $payload['context_management'] = [
+            'edits' => array_map(static fn (ContextEditInterface $edit): array => $edit->edit(), $this->contextEdits),
+        ];
 
         return $payload;
     }
@@ -491,6 +676,15 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     }
 
     /**
+     * Whether a later system message can stay in place. Unknown IDs are assumed to take one, since
+     * the newest generations all do.
+     */
+    private function acceptsMidConversationSystem(string $model): bool
+    {
+        return $this->known($model)?->acceptsMidConversationSystem() ?? true;
+    }
+
+    /**
      * Whether a forced tool choice is a 400 on this model. Unknown IDs are assumed to refuse,
      * since the newest generations all do.
      */
@@ -542,8 +736,14 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     /**
      * Convert a Message to Anthropic API format.
      */
-    private function convertMessage(Message $message): array
+    private function convertMessage(Message $message, bool $replayThinking): array
     {
+        $sentBack = $message->isAssistant() ? $this->contentToSendBack($message, $replayThinking) : [];
+
+        if ($sentBack !== []) {
+            return ['role' => 'assistant', 'content' => $sentBack];
+        }
+
         $apiMessage = [
             'role' => $this->convertRole($message->role),
         ];
@@ -581,6 +781,31 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         }
 
         return $apiMessage;
+    }
+
+    /**
+     * The assistant turn exactly as the API returned it, less thinking when that is not going back.
+     *
+     * Decoding loses the difference between an empty object and an empty list, so tool inputs are
+     * made objects again.
+     *
+     * @return list<array<string, mixed>> Empty when this provider left nothing on the message
+     */
+    private function contentToSendBack(Message $message, bool $replayThinking): array
+    {
+        $content = [];
+
+        foreach ($message->replayFor($this->getName()) as $block) {
+            if (!is_array($block) || (!$replayThinking && in_array($block['type'] ?? null, self::THINKING_BLOCKS, true))) {
+                continue;
+            }
+
+            $content[] = ($block['type'] ?? null) === 'tool_use'
+                ? array_replace($block, ['input' => (object) ($block['input'] ?? [])])
+                : $block;
+        }
+
+        return $content;
     }
 
     /**
@@ -655,11 +880,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'x-api-key: ' . $this->apiKey,
-                'anthropic-version: ' . self::API_VERSION,
-            ],
+            CURLOPT_HTTPHEADER => $this->headersFor($payload),
             CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$responseHeaders) {
                 $parts = explode(':', $header, 2);
                 if (count($parts) === 2) {
@@ -689,6 +910,69 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         }
 
         return $data;
+    }
+
+    /**
+     * The HTTP headers for this request, with the betas its body relies on.
+     *
+     * @param array<string, mixed> $payload The request body
+     *
+     * @return list<string>
+     */
+    protected function headersFor(array $payload): array
+    {
+        $headers = [
+            'Content-Type: application/json',
+            'x-api-key: ' . $this->apiKey,
+            'anthropic-version: ' . self::API_VERSION,
+        ];
+        $betas = $this->betasFor($payload);
+
+        if ($betas !== []) {
+            $headers[] = 'anthropic-beta: ' . implode(',', $betas);
+        }
+
+        return $headers;
+    }
+
+    /**
+     * @param array<string, mixed> $payload The request body
+     *
+     * @return list<string>
+     */
+    private function betasFor(array $payload): array
+    {
+        $betas = [];
+
+        if (isset($payload['thinking']['block_binding'])) {
+            $betas[] = self::THINKING_BINDING_BETA;
+        }
+
+        foreach ($this->contextEdits as $edit) {
+            $betas[] = $edit->beta();
+        }
+
+        if ($this->holdsCompaction($payload['messages'] ?? [])) {
+            $betas[] = Compaction::BETA;
+        }
+
+        return array_values(array_unique($betas));
+    }
+
+    /**
+     * Whether a compaction block is going back, so its beta goes with it even once this provider no longer compacts.
+     *
+     * @param array<array<string, mixed>> $messages
+     */
+    private function holdsCompaction(array $messages): bool
+    {
+        foreach ($messages as $message) {
+            if (is_array($message['content'] ?? null) && in_array('compaction', array_column($message['content'], 'type'), true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -752,12 +1036,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'x-api-key: ' . $this->apiKey,
-                'anthropic-version: ' . self::API_VERSION,
-                'Accept: text/event-stream',
-            ],
+            CURLOPT_HTTPHEADER => [...$this->headersFor($payload), 'Accept: text/event-stream'],
             CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer) {
                 $buffer .= $data;
 
