@@ -123,6 +123,16 @@ describe('AnthropicProvider', function () {
             expect($this->provider->lastPayload['messages'][0]['role'])->toBe('user');
         });
 
+        it('marks the system prompt for caching when asked', function () {
+            $this->provider->fakeResponse = ['content' => [['type' => 'text', 'text' => 'ok']], 'stop_reason' => 'end_turn'];
+
+            $this->provider->chat([Message::system('Be brief.'), Message::user('Hi')], ['cache' => true]);
+
+            expect($this->provider->lastPayload['system'])->toBe([
+                ['type' => 'text', 'text' => 'Be brief.', 'cache_control' => ['type' => 'ephemeral']],
+            ]);
+        });
+
         it('uses default model and max tokens', function () {
             $this->provider->fakeResponse = [
                 'content' => [['type' => 'text', 'text' => 'OK']],

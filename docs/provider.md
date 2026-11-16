@@ -66,6 +66,46 @@ Fable 5.1 and later, Opus 5.5 and Sonnet 5.5 do not accept a forced tool choice.
 
 Every model from 4.7 on rejects `temperature`, so passing one throws a `ProviderException` before any request is made.
 
+## Long sessions
+
+Three options keep a long tool-using session coherent. Pass them to the constructor:
+
+```php
+use PapiAI\Anthropic\AnthropicProvider;
+use PapiAI\Anthropic\Compaction;
+use PapiAI\Anthropic\ThinkingReplay;
+use PapiAI\Anthropic\ToolResultClearing;
+
+$provider = new AnthropicProvider(
+    apiKey: $_ENV['ANTHROPIC_API_KEY'],
+    thinkingReplay: ThinkingReplay::DropOnEdit,
+    contextEdits: [new ToolResultClearing(), new Compaction()],
+);
+
+$response = $provider->chat($messages, ['effort' => 'high']);
+$messages[] = $response->toMessage(); // carries the thinking and any compaction summary
+```
+
+**Thinking replay.** Within a tool-use turn Anthropic wants the model's thinking back. Each block is
+tied to the system prompt, the tools and every earlier message as they were when it was written, so
+only a history that grows by appending can send it back. `ThinkingReplay::Off`, the default, leaves
+it out. `FailOnEdit` sends it, and an edited history fails with a 400. `DropOnEdit` sends it, and the
+API drops whatever an edit invalidated. Both need adaptive thinking to tell the API which to do: on a
+request without it (`none` on Sonnet 5.5, or a model that does not think by default) `FailOnEdit`
+sends the thinking anyway and `DropOnEdit` leaves it out. Blocks are also tied to the model, and on
+Sonnet and Haiku 5.5 to the account, so the API drops any it cannot read.
+
+**Changing instructions mid-session.** Append a `Message::system()` rather than editing the first
+one. On Opus 4.8 and later, Fable, Mythos, and Sonnet and Haiku 5.5 it stays where it is, so nothing
+already sent changes. It must follow a user message and be the last message or come just before an
+assistant one; anywhere else throws a `ProviderException` before any request is made. On older
+models it replaces the system prompt.
+
+**Server-side context.** `Compaction` has the API summarise the conversation once its input passes
+the trigger (150,000 tokens by default, 50,000 at least), and `ToolResultClearing` has it clear old
+tool results (from 100,000 tokens, keeping the latest three). Neither edits the history you send, so
+neither invalidates thinking. The token counts include what compaction spent.
+
 ## Capabilities
 
 | Capability | Supported |
@@ -74,7 +114,7 @@ Every model from 4.7 on rejects `temperature`, so passing one throws a `Provider
 | Streaming | Yes |
 | Tool calling | Yes |
 | Vision | Yes |
-| Structured output | Yes |
+| Structured output | No |
 | Prompt caching | Yes |
 
 ## Creating It by Name
@@ -93,12 +133,13 @@ $provider = $registry->create('anthropic', [
 ]);
 ```
 
-It takes `api_key` (required), `model`, `max_tokens` and `effort`. Anything it is not given falls
-back to the constructor's defaults, and a missing or unknown setting throws `ConfigurationException`
-before any request is made.
+It takes `api_key` (required), `model`, `max_tokens`, `effort`, `replay_thinking` (`off`,
+`fail_on_edit` or `drop_on_edit`), `compact_at` and `clear_tool_results_at` (both in input tokens).
+Anything it is not given falls back to the constructor's defaults, and a missing, unknown or invalid
+setting throws `ConfigurationException` before any request is made.
 
 ## Requirements
 
 - PHP 8.2+
 - `ext-curl`
-- `papi-ai/papi-core` ^0.14
+- `papi-ai/papi-core` ^0.15.6

@@ -133,4 +133,18 @@ describe('ClaudeModel', function () {
             }
         });
     });
+
+    describe('a system message after the conversation has started', function () {
+        it('is accepted from Opus 4.8 on, by Fable and Mythos, and by Sonnet and Haiku 5.5', function () {
+            foreach ([ClaudeModel::Opus48, ClaudeModel::Opus5, ClaudeModel::Opus55, ClaudeModel::Sonnet55, ClaudeModel::Haiku55, ClaudeModel::Fable5, ClaudeModel::Fable52, ClaudeModel::Mythos51] as $model) {
+                expect($model->acceptsMidConversationSystem())->toBeTrue();
+            }
+        });
+
+        it('is rejected by Sonnet 5 and by anything older than Opus 4.8', function () {
+            foreach ([ClaudeModel::Sonnet5, ClaudeModel::Opus47, ClaudeModel::Opus46, ClaudeModel::Sonnet46, ClaudeModel::Haiku45] as $model) {
+                expect($model->acceptsMidConversationSystem())->toBeFalse();
+            }
+        });
+    });
 });

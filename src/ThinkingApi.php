@@ -33,8 +33,8 @@ enum ThinkingApi
     case Adaptive;
 
     /**
-     * Thinking cannot be switched off and a `disabled` block is a 400, so no thinking block is
-     * ever sent; only `output_config.effort`. Fable and Mythos.
+     * Thinking cannot be switched off and a `disabled` block is a 400, so effort goes only in
+     * `output_config.effort`. Fable, Mythos and Opus 5.5.
      */
     case AlwaysOn;
 }

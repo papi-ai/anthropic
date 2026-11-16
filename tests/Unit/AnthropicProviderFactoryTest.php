@@ -14,6 +14,9 @@ declare(strict_types=1);
 
 use PapiAI\Anthropic\AnthropicProvider;
 use PapiAI\Anthropic\AnthropicProviderFactory;
+use PapiAI\Anthropic\Compaction;
+use PapiAI\Anthropic\ThinkingReplay;
+use PapiAI\Anthropic\ToolResultClearing;
 use PapiAI\Core\Effort;
 use PapiAI\Core\Exception\ConfigurationException;
 use PapiAI\Core\Factory\ComposerDiscovery;
@@ -38,7 +41,8 @@ describe('AnthropicProviderFactory', function () {
     });
 
     it('takes what the constructor takes', function () {
-        expect(array_map(fn ($setting) => $setting->name, $this->factory->settings()))->toBe(['api_key', 'model', 'max_tokens', 'effort']);
+        expect(array_map(fn ($setting) => $setting->name, $this->factory->settings()))
+            ->toBe(['api_key', 'model', 'max_tokens', 'effort', 'replay_thinking', 'compact_at', 'clear_tool_results_at']);
     });
 
     it('builds the provider from its settings', function () {
@@ -60,6 +64,39 @@ describe('AnthropicProviderFactory', function () {
         $provider = $this->factory->create(['api_key' => 'k']);
 
         expect(($this->property)($provider, 'defaultModel'))->toBe(AnthropicProvider::MODEL_CLAUDE_SONNET_5_5);
+    });
+
+    it('builds replay and server-side context management from their settings', function () {
+        $provider = $this->factory->create([
+            'api_key' => 'k',
+            'replay_thinking' => 'drop_on_edit',
+            'compact_at' => '80000',
+            'clear_tool_results_at' => 40000,
+        ]);
+
+        expect(($this->property)($provider, 'thinkingReplay'))->toBe(ThinkingReplay::DropOnEdit);
+        expect(($this->property)($provider, 'contextEdits'))->toEqual([new ToolResultClearing(40000), new Compaction(80000)]);
+    });
+
+    it('replays nothing and manages no context unless told to', function () {
+        $provider = $this->factory->create(['api_key' => 'k']);
+
+        expect(($this->property)($provider, 'thinkingReplay'))->toBe(ThinkingReplay::Off);
+        expect(($this->property)($provider, 'contextEdits'))->toBe([]);
+    });
+
+    it('refuses a replay setting it does not know', function () {
+        expect(fn () => $this->factory->create(['api_key' => 'k', 'replay_thinking' => 'yes']))->toThrow(
+            ConfigurationException::class,
+            'Setting "replay_thinking" of provider "anthropic" must be one of "off", "fail_on_edit", "drop_on_edit"; "yes" given.',
+        );
+    });
+
+    it('refuses a compaction trigger the API would reject', function () {
+        expect(fn () => $this->factory->create(['api_key' => 'k', 'compact_at' => 1000]))->toThrow(
+            ConfigurationException::class,
+            'Setting "compact_at" of provider "anthropic" is invalid: Compaction cannot trigger below 50000 input tokens; 1000 given.',
+        );
     });
 
     it('refuses to build without its required settings', function () {
