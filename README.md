@@ -74,6 +74,26 @@ Every model from 4.7 on rejects `temperature`, so passing one throws a `Provider
 - Vision/multimodal support
 - Streaming support
 
+## Creating It by Name
+
+An application that picks its provider from configuration can build this one without naming
+its class:
+
+```php
+use PapiAI\Core\Factory\ComposerDiscovery;
+use PapiAI\Core\Factory\ProviderRegistry;
+
+$registry = new ProviderRegistry(new ComposerDiscovery());
+
+$provider = $registry->create('anthropic', [
+    'api_key' => $_ENV['ANTHROPIC_API_KEY'],
+]);
+```
+
+It takes `api_key` (required), `model`, `max_tokens` and `effort`. Anything it is not given falls
+back to the constructor's defaults, and a missing or unknown setting throws `ConfigurationException`
+before any request is made.
+
 ## License
 
 MIT

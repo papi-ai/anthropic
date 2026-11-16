@@ -25,6 +25,7 @@ use PapiAI\Core\Exception\UnknownEffortException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
+use PapiAI\Core\StopReason;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
 use PapiAI\Core\ToolChoice;
@@ -138,6 +139,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             messages: $messages,
             usage: $payload['usage'] ?? [],
             stopReason: $payload['stop_reason'] ?? null,
+            stoppedBecause: $this->stoppedBecauseOf($payload['stop_reason'] ?? null),
         );
     }
 
@@ -779,5 +781,19 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
                 }
             }
         }
+    }
+
+    /**
+     * Why the model stopped, in core's vocabulary.
+     */
+    private function stoppedBecauseOf(?string $stopReason): StopReason
+    {
+        return match ($stopReason) {
+            'end_turn', 'stop_sequence' => StopReason::Stop,
+            'max_tokens', 'model_context_window_exceeded' => StopReason::MaxTokens,
+            'tool_use' => StopReason::ToolCalls,
+            'refusal' => StopReason::Refused,
+            default => StopReason::Other,
+        };
     }
 }
