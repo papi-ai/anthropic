@@ -133,27 +133,27 @@ describe('AnthropicProvider', function () {
 
             $this->provider->chat([Message::user('Hello')]);
 
-            expect($this->provider->lastPayload['model'])->toBe('claude-sonnet-5');
+            expect($this->provider->lastPayload['model'])->toBe('claude-sonnet-5-5');
             expect($this->provider->lastPayload['max_tokens'])->toBe(4096);
         });
 
         it('overrides model and options from parameters', function () {
             $this->provider->fakeResponse = [
                 'content' => [['type' => 'text', 'text' => 'OK']],
-                'model' => 'claude-3-opus-20240229',
+                'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_4_6,
                 'role' => 'assistant',
                 'stop_reason' => 'end_turn',
                 'usage' => ['input_tokens' => 10, 'output_tokens' => 5],
             ];
 
             $this->provider->chat([Message::user('Hello')], [
-                'model' => 'claude-3-opus-20240229',
+                'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_4_6,
                 'maxTokens' => 8192,
                 'temperature' => 0.5,
                 'stopSequences' => ['END'],
             ]);
 
-            expect($this->provider->lastPayload['model'])->toBe('claude-3-opus-20240229');
+            expect($this->provider->lastPayload['model'])->toBe('claude-sonnet-4-6');
             expect($this->provider->lastPayload['max_tokens'])->toBe(8192);
             expect($this->provider->lastPayload['temperature'])->toBe(0.5);
             expect($this->provider->lastPayload['stop_sequences'])->toBe(['END']);

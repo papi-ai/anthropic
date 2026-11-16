@@ -40,7 +40,12 @@ describe('AnthropicProvider reasoning effort', function () {
 
     // Every current Claude rejects a token budget with a 400. The knob is adaptive thinking plus
     // an effort level, which is a different shape entirely.
-    describe('on the current generation (adaptive thinking)', function () {
+    describe('on the adaptive generation (Sonnet 5 as the example)', function () {
+        beforeEach(function () {
+            $base = $this->chat;
+            $this->chat = fn (array $options) => $base($options + ['model' => AnthropicProvider::MODEL_CLAUDE_SONNET_5]);
+        });
+
         it('sends adaptive thinking and an effort level, never a budget', function () {
             ($this->chat)(['effort' => 'medium']);
 
@@ -93,6 +98,55 @@ describe('AnthropicProvider reasoning effort', function () {
 
     // Fable cannot stop thinking. Asking for none narrows to the shallowest effort, the same
     // posture as Gemini 3, rather than sending a disabled block the API rejects.
+    describe('on the 5.5 generation, where the off switch differs per model', function () {
+        it('sends between_tools and nothing else for none on Sonnet 5.5', function () {
+            ($this->chat)(['effort' => 'none', 'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_5_5]);
+
+            expect($this->provider->lastPayload['thinking'])->toBe(['type' => 'between_tools']);
+            expect($this->provider->lastPayload)->not->toHaveKey('output_config');
+        });
+
+        it('sends disabled for none on Haiku 5.5', function () {
+            ($this->chat)(['effort' => 'none', 'model' => AnthropicProvider::MODEL_CLAUDE_HAIKU_5_5]);
+
+            expect($this->provider->lastPayload['thinking'])->toBe(['type' => 'disabled']);
+        });
+
+        it('narrows none to low on Opus 5.5, which cannot stop thinking', function () {
+            ($this->chat)(['effort' => 'none', 'model' => AnthropicProvider::MODEL_CLAUDE_OPUS_5_5]);
+
+            expect($this->provider->lastPayload)->not->toHaveKey('thinking');
+            expect($this->provider->lastPayload['output_config'])->toBe(['effort' => 'low']);
+        });
+
+        it('sends no thinking block for none on a model it has not heard of, since omitting is never a 400', function () {
+            ($this->chat)(['effort' => 'none', 'model' => 'claude-opus-6']);
+
+            expect($this->provider->lastPayload)->not->toHaveKey('thinking');
+            expect($this->provider->lastPayload)->not->toHaveKey('output_config');
+        });
+    });
+
+    describe('sampling parameters', function () {
+        it('refuses temperature before HTTP on models that return 400 for it', function () {
+            expect(fn () => ($this->chat)(['temperature' => 0.2, 'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_5_5]))
+                ->toThrow(ProviderException::class, 'temperature');
+
+            expect($this->provider->lastPayload)->toBe([]);
+        });
+
+        it('refuses temperature on an unknown model, assuming the newest rules', function () {
+            expect(fn () => ($this->chat)(['temperature' => 0.2, 'model' => 'claude-opus-6']))
+                ->toThrow(ProviderException::class);
+        });
+
+        it('still forwards temperature to the 4.6 pair and Haiku 4.5', function () {
+            ($this->chat)(['temperature' => 0.2, 'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_4_6]);
+
+            expect($this->provider->lastPayload['temperature'])->toBe(0.2);
+        });
+    });
+
     describe('on Fable, where thinking is always on', function () {
         it('never sends a thinking block, and maps effort to output_config', function () {
             ($this->chat)(['effort' => 'high', 'model' => AnthropicProvider::MODEL_CLAUDE_FABLE_5]);

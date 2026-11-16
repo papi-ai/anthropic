@@ -38,6 +38,15 @@ describe('ClaudeModel', function () {
     });
 
     describe('retirement', function () {
+        it('knows the 5.5 generation and Fable 5.2', function () {
+            expect(ClaudeModel::from('claude-opus-5-5'))->toBe(ClaudeModel::Opus55);
+            expect(ClaudeModel::from('claude-sonnet-5-5'))->toBe(ClaudeModel::Sonnet55);
+            expect(ClaudeModel::from('claude-haiku-5-5'))->toBe(ClaudeModel::Haiku55);
+            expect(ClaudeModel::from('claude-fable-5-2'))->toBe(ClaudeModel::Fable52);
+            expect(ClaudeModel::Fable52->retiresNotBefore())->toBe('2027-11-09');
+            expect(ClaudeModel::Opus55->retiresNotBefore())->toBe('2027-09-22');
+        });
+
         it('carries no deprecation today, since every shipped model is active', function () {
             foreach (ClaudeModel::cases() as $model) {
                 expect($model->isDeprecated())->toBeFalse();
@@ -61,9 +70,24 @@ describe('ClaudeModel', function () {
             }
         });
 
-        it('is always on for Fable, which cannot be told to stop', function () {
+        it('is always on for Fable and Opus 5.5, which cannot be told to stop', function () {
             expect(ClaudeModel::Fable5->thinking())->toBe(ThinkingApi::AlwaysOn);
-            expect(ClaudeModel::Fable51->thinking())->toBe(ThinkingApi::AlwaysOn);
+            expect(ClaudeModel::Fable52->thinking())->toBe(ThinkingApi::AlwaysOn);
+            expect(ClaudeModel::Opus55->thinking())->toBe(ThinkingApi::AlwaysOn);
+            expect(ClaudeModel::Opus55->offSwitch())->toBeNull();
+        });
+
+        it('knows which block switches thinking off, which differs by model', function () {
+            expect(ClaudeModel::Sonnet55->offSwitch())->toBe('between_tools');
+            expect(ClaudeModel::Haiku55->offSwitch())->toBe('disabled');
+            expect(ClaudeModel::Sonnet5->offSwitch())->toBe('disabled');
+            expect(ClaudeModel::Haiku45->offSwitch())->toBeNull();
+        });
+
+        it('knows each model\'s default effort, which is not always high', function () {
+            expect(ClaudeModel::Opus55->defaultEffort())->toBe(Effort::Medium);
+            expect(ClaudeModel::Haiku55->defaultEffort())->toBe(Effort::Medium);
+            expect(ClaudeModel::Sonnet55->defaultEffort())->toBe(Effort::High);
         });
 
         it('says which adaptive models think when the field is omitted', function () {
@@ -90,10 +114,23 @@ describe('ClaudeModel', function () {
     });
 
     describe('forced tool choice', function () {
-        it('is refused by Fable 5.1 alone', function () {
-            expect(ClaudeModel::Fable51->acceptsForcedTools())->toBeFalse();
+        it('is refused by Fable 5.1 and later, and by the whole 5.5 generation', function () {
+            foreach ([ClaudeModel::Fable51, ClaudeModel::Fable52, ClaudeModel::Opus55, ClaudeModel::Sonnet55] as $model) {
+                expect($model->acceptsForcedTools())->toBeFalse();
+            }
             expect(ClaudeModel::Fable5->acceptsForcedTools())->toBeTrue();
             expect(ClaudeModel::Sonnet5->acceptsForcedTools())->toBeTrue();
+        });
+    });
+
+    describe('sampling parameters', function () {
+        it('are rejected from 4.7 on and accepted before', function () {
+            foreach ([ClaudeModel::Opus47, ClaudeModel::Opus5, ClaudeModel::Sonnet55, ClaudeModel::Fable52] as $model) {
+                expect($model->acceptsSampling())->toBeFalse();
+            }
+            foreach ([ClaudeModel::Opus46, ClaudeModel::Sonnet46, ClaudeModel::Haiku45] as $model) {
+                expect($model->acceptsSampling())->toBeTrue();
+            }
         });
     });
 });
