@@ -35,7 +35,8 @@ class TestableAnthropicToolChoiceProvider extends AnthropicProvider
 
 describe('AnthropicProvider tool choice', function () {
     beforeEach(function () {
-        $this->provider = new TestableAnthropicToolChoiceProvider('test-api-key');
+        // Sonnet 5 accepts a forced choice; the 5.5 generation does not and is covered below.
+        $this->provider = new TestableAnthropicToolChoiceProvider('test-api-key', AnthropicProvider::MODEL_CLAUDE_SONNET_5);
         $this->tools = [
             ['name' => 'get_weather', 'description' => 'Weather', 'parameters' => ['type' => 'object']],
         ];
@@ -126,6 +127,37 @@ describe('AnthropicProvider tool-selection capability', function () {
 
                 expect($this->provider->lastPayload['tool_choice'])->toBe(['type' => $choice]);
             }
+        });
+    });
+
+    describe('on the 5.5 generation and on unknown IDs', function () {
+        beforeEach(function () {
+            $this->provider = new TestableAnthropicToolChoiceProvider('test-api-key');
+            $this->tools = [
+                ['name' => 'get_weather', 'description' => 'Weather', 'parameters' => ['type' => 'object']],
+            ];
+        });
+
+        it('throws for a forced choice on Opus 5.5 and Sonnet 5.5', function () {
+            foreach ([AnthropicProvider::MODEL_CLAUDE_OPUS_5_5, AnthropicProvider::MODEL_CLAUDE_SONNET_5_5] as $model) {
+                expect(fn () => $this->provider->chat([Message::user('hi')], [
+                    'tools' => $this->tools, 'toolChoice' => 'required', 'model' => $model,
+                ]))->toThrow(ProviderException::class, 'forced tool choice');
+            }
+        });
+
+        it('throws for a forced choice on a model it has not heard of, since the newest generations refuse', function () {
+            expect(fn () => $this->provider->chat([Message::user('hi')], [
+                'tools' => $this->tools, 'toolChoice' => ['name' => 'get_weather'], 'model' => 'claude-opus-6',
+            ]))->toThrow(ProviderException::class);
+        });
+
+        it('still forwards a forced choice on Sonnet 5, which accepts it', function () {
+            $this->provider->chat([Message::user('hi')], [
+                'tools' => $this->tools, 'toolChoice' => 'required', 'model' => AnthropicProvider::MODEL_CLAUDE_SONNET_5,
+            ]);
+
+            expect($this->provider->lastPayload['tool_choice'])->toBe(['type' => 'any']);
         });
     });
 });

@@ -48,7 +48,14 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     private const API_VERSION = '2023-06-01';
 
     // Current generation. These IDs are dateless pinned snapshots, not moving aliases.
+    public const MODEL_CLAUDE_FABLE_5_2 = ClaudeModel::Fable52->value;
     public const MODEL_CLAUDE_FABLE_5_1 = ClaudeModel::Fable51->value;
+    public const MODEL_CLAUDE_MYTHOS_5_2 = ClaudeModel::Mythos52->value;
+    public const MODEL_CLAUDE_MYTHOS_5_1 = ClaudeModel::Mythos51->value;
+    public const MODEL_CLAUDE_MYTHOS_5 = ClaudeModel::Mythos5->value;
+    public const MODEL_CLAUDE_OPUS_5_5 = ClaudeModel::Opus55->value;
+    public const MODEL_CLAUDE_SONNET_5_5 = ClaudeModel::Sonnet55->value;
+    public const MODEL_CLAUDE_HAIKU_5_5 = ClaudeModel::Haiku55->value;
     public const MODEL_CLAUDE_OPUS_5 = ClaudeModel::Opus5->value;
     public const MODEL_CLAUDE_SONNET_5 = ClaudeModel::Sonnet5->value;
     public const MODEL_CLAUDE_FABLE_5 = ClaudeModel::Fable5->value;
@@ -78,7 +85,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
      */
     public function __construct(
         private readonly string $apiKey,
-        private readonly string $defaultModel = self::MODEL_CLAUDE_SONNET_5,
+        private readonly string $defaultModel = self::MODEL_CLAUDE_SONNET_5_5,
         private readonly int $defaultMaxTokens = 4096,
         private readonly ?Effort $defaultEffort = null,
     ) {
@@ -243,6 +250,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         }
 
         if (isset($options['temperature'])) {
+            $this->assertAcceptsSampling((string) $payload['model']);
             $payload['temperature'] = $options['temperature'];
         }
 
@@ -306,9 +314,10 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     /**
      * Apply a level of effort in whichever shape this model's generation accepts.
      *
-     * Three generations, three shapes. Haiku 4.5 predates adaptive thinking and wants a token
-     * budget. Everything from 4.6 on wants adaptive thinking plus an effort level, and rejects
-     * a budget with a 400. Fable cannot stop thinking at all, so it never gets a thinking block.
+     * Haiku 4.5 and older want a token budget. Everything from 4.6 on wants adaptive thinking
+     * plus an effort level. Models that cannot stop thinking never get a thinking block, and
+     * "none" narrows to the shallowest level. Where thinking can be switched off, the block that
+     * does it differs by model, so the model is asked rather than assumed.
      *
      * @param array<string, mixed> $payload The request so far
      *
@@ -319,7 +328,6 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     private function withThinking(array $payload, Effort $effort, string $model): array
     {
         if ($this->thinksAlways($model)) {
-            // Cannot be switched off, so "none" narrows to the shallowest level on offer.
             $payload['output_config'] = ['effort' => $this->nativeLevel($effort, $model)];
 
             return $payload;
@@ -330,10 +338,10 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         }
 
         if (!$effort->thinks()) {
-            // Sonnet 5 and Opus 5 think unless told not to. The 4.x models are off when the
-            // field is omitted, so saying "disabled" there would only be noise.
-            if ($this->thinksByDefault($model)) {
-                $payload['thinking'] = ['type' => 'disabled'];
+            $switch = $this->offSwitchFor($model);
+
+            if ($switch !== null) {
+                $payload['thinking'] = ['type' => $switch];
             }
 
             return $payload;
@@ -343,6 +351,43 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         $payload['output_config'] = ['effort' => $this->nativeLevel($effort, $model)];
 
         return $payload;
+    }
+
+    /**
+     * The block that turns thinking off for this model, or null to send nothing.
+     *
+     * Nothing is sent for a model that is off by default, and for one we have not heard of:
+     * omitting the field is the one shape no model rejects.
+     */
+    private function offSwitchFor(string $model): ?string
+    {
+        $known = $this->known($model);
+
+        if ($known === null || !$known->thinksByDefault()) {
+            return null;
+        }
+
+        return $known->offSwitch();
+    }
+
+    /**
+     * Refuse sampling parameters on the models that return 400 for them.
+     *
+     * Every model from 4.7 on rejects `temperature`; so does anything we have not heard of,
+     * since the newest generations all do.
+     *
+     * @throws ProviderException When the model does not accept sampling parameters
+     */
+    private function assertAcceptsSampling(string $model): void
+    {
+        if ($this->known($model)?->acceptsSampling() ?? false) {
+            return;
+        }
+
+        throw new ProviderException(
+            sprintf('Model "%s" does not accept "temperature": the API returns 400 for sampling parameters. Remove it and let the model use its own default.', $model),
+            $this->getName(),
+        );
     }
 
     /**
@@ -430,15 +475,6 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     }
 
     /**
-     * Whether an adaptive model thinks when the field is omitted. Unknown models are assumed to,
-     * since that is the direction every generation since Opus 5 has taken.
-     */
-    private function thinksByDefault(string $model): bool
-    {
-        return $this->known($model)?->thinksByDefault() ?? true;
-    }
-
-    /**
      * The effort levels this model accepts. Unknown models are assumed to take the full scale.
      *
      * @return non-empty-list<Effort>
@@ -453,17 +489,12 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     }
 
     /**
-     * Fable 5.1 and Mythos 5.1 return 400 for "any" and for a named tool.
+     * Whether a forced tool choice is a 400 on this model. Unknown IDs are assumed to refuse,
+     * since the newest generations all do.
      */
     private function refusesForcedTools(string $model): bool
     {
-        $known = $this->known($model);
-
-        if ($known !== null) {
-            return !$known->acceptsForcedTools();
-        }
-
-        return preg_match('/claude-(fable|mythos)-5-1(?![0-9])/i', $model) === 1;
+        return !($this->known($model)?->acceptsForcedTools() ?? false);
     }
 
     /**
