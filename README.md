@@ -108,11 +108,35 @@ the trigger (150,000 tokens by default, 50,000 at least), and `ToolResultClearin
 tool results (from 100,000 tokens, keeping the latest three). Neither edits the history you send, so
 neither invalidates thinking. The token counts include what compaction spent.
 
+## Structured output
+
+Pass a schema and Claude is held to it: the provider sends it as `output_config.format`, so the
+reply is JSON of that shape on every model.
+
+```php
+$response = $agent->run('Review this draft: ...', [
+    'outputSchema' => Schema::object([
+        'approved' => Schema::boolean(),
+        'issues' => Schema::array(Schema::string()),
+    ]),
+]);
+
+$response->data['approved'];
+```
+
+Claude's schema compiler takes no numeric or length limits, no array size beyond a minimum of
+one, and only a fixed list of string formats. The provider moves those into the property's
+description, where the model still reads them, and the agent checks the reply against your full
+schema. Not accepted by the API at all: recursive schemas, `oneOf`, `not`, and regular
+expressions with lookarounds or backreferences. A reply can still miss the schema when Claude
+refuses or runs out of `maxTokens`.
+
 ## Features
 
 - Tool/function calling
 - Vision/multimodal support
 - Streaming support
+- Structured output, enforced by the API
 
 ## Creating It by Name
 

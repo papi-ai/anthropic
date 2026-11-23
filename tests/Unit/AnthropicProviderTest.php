@@ -82,10 +82,6 @@ describe('AnthropicProvider', function () {
         it('supports vision', function () {
             expect($this->provider->supportsVision())->toBeTrue();
         });
-
-        it('does not support native structured output', function () {
-            expect($this->provider->supportsStructuredOutput())->toBeFalse();
-        });
     });
 
     describe('chat', function () {
