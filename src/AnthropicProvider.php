@@ -250,11 +250,11 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
     /**
      * Whether this provider supports structured JSON output.
      *
-     * @return bool Always false; Anthropic does not have a native JSON mode
+     * @return bool Always true; every Claude model takes a schema in `output_config.format`
      */
     public function supportsStructuredOutput(): bool
     {
-        return false; // Anthropic doesn't have native JSON mode yet
+        return true;
     }
 
     /**
@@ -312,6 +312,13 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
 
         if ($effort !== null) {
             $payload = $this->withThinking($payload, $effort, $model);
+        }
+
+        if (isset($options['outputSchema'])) {
+            $payload['output_config']['format'] = [
+                'type' => 'json_schema',
+                'schema' => (new OutputSchema())->forApi($options['outputSchema']),
+            ];
         }
 
         $bindable = $this->thinksAdaptively($payload);
