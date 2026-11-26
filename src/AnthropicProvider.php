@@ -25,6 +25,7 @@ use PapiAI\Core\Exception\UnknownEffortException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
+use PapiAI\Core\Schema\WireSchema;
 use PapiAI\Core\StopReason;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
@@ -317,7 +318,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
         if (isset($options['outputSchema'])) {
             $payload['output_config']['format'] = [
                 'type' => 'json_schema',
-                'schema' => (new OutputSchema())->forApi($options['outputSchema']),
+                'schema' => (new WireSchema((new OutputSchema())->forApi($options['outputSchema'])))->toArray(),
             ];
         }
 
@@ -734,7 +735,7 @@ class AnthropicProvider implements ProviderInterface, NamedToolSelectableInterfa
             fn (array $tool): array => [
                 'name' => $tool['name'],
                 'description' => $tool['description'] ?? '',
-                'input_schema' => $tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object', 'properties' => []],
+                'input_schema' => (new WireSchema($tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object']))->toArray(),
             ],
             $tools,
         );

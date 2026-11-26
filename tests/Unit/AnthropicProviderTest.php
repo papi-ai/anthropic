@@ -179,7 +179,7 @@ describe('AnthropicProvider', function () {
                 [
                     'name' => 'get_weather',
                     'description' => 'Get weather',
-                    'input_schema' => ['type' => 'object', 'properties' => []],
+                    'input_schema' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]],
                 ],
             ];
 
